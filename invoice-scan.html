@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>مسح الفواتير</title>
+<link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{--paper:#eef0f4;--ink:#2a3a9c;--text:#1d2236;--line:#c9cedb;--ok:#1d7a4a;--card:#fff}
+@media (prefers-color-scheme:dark){:root{--paper:#14172a;--ink:#8fa0ff;--text:#e8eaf5;--line:#2c3250;--card:#1c2038;--ok:#4cc58a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--text);font-family:Tajawal,system-ui,sans-serif;padding:env(safe-area-inset-top) 14px env(safe-area-inset-bottom)}
+h1{font-size:20px;margin:16px 0 12px;color:var(--ink)}
+input,button{font:inherit}
+.in{width:100%;padding:14px;border:2px solid var(--ink);border-radius:8px;background:var(--card);color:var(--text);font-size:18px}
+.btn{width:100%;margin-top:12px;padding:14px;border:0;border-radius:8px;background:var(--ink);color:var(--paper);font-weight:700;font-size:18px}
+.btn.ghost{background:none;border:2px solid var(--ink);color:var(--ink)}
+#scan{display:none}
+.cam{position:relative;border-radius:10px;overflow:hidden;background:#000;aspect-ratio:4/3}
+video{width:100%;height:100%;object-fit:cover}
+.frame{position:absolute;inset:18% 8%;border:3px dashed #fff;border-radius:8px;opacity:.85}
+.frame.hit{border-color:#4cc58a;border-style:solid}
+#status{margin:10px 0;min-height:24px;font-weight:700}
+table{width:100%;border-collapse:collapse;background:var(--card);border-radius:8px;overflow:hidden}
+th,td{padding:8px;border-bottom:1px solid var(--line);text-align:right;font-size:15px}
+th{color:var(--ink)}
+td input{width:100%;border:0;background:none;color:var(--text);font:inherit;padding:2px}
+td.n{direction:ltr;font-weight:700;letter-spacing:1px}
+.row{display:flex;gap:8px}.row .btn{margin-bottom:16px}
+</style>
+</head>
+<body>
+<section id="start">
+  <h1>اسم السواق</h1>
+  <input id="driver" class="in" placeholder="اكتب اسم السواق" autocomplete="off">
+  <button class="btn" id="go">ابدأ المسح</button>
+</section>
+
+<section id="scan">
+  <h1 id="who"></h1>
+  <div class="cam"><video id="v" playsinline muted></video><div class="frame" id="fr"></div></div>
+  <div id="status">جاري تشغيل الكاميرا…</div>
+  <table>
+    <thead><tr><th>#</th><th>السواق</th><th>آخر 4</th><th>العميل</th><th></th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <div class="row" style="margin-top:12px">
+    <button class="btn" id="copy">نسخ الجدول</button>
+    <button class="btn ghost" id="csv">تحميل CSV</button>
+  </div>
+  <button class="btn ghost" id="change" style="margin-bottom:20px">تغيير السواق</button>
+</section>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+let driver = "", items = [], worker, last = "", busy = false, stream;
+try { items = JSON.parse(localStorage.getItem("inv_items") || "[]"); driver = localStorage.getItem("inv_driver") || ""; } catch (e) {}
+$("driver").value = driver;
+const save = () => { try { localStorage.setItem("inv_items", JSON.stringify(items)); localStorage.setItem("inv_driver", driver); } catch (e) {} };
+
+function render() {
+  $("rows").innerHTML = "";
+  items.forEach((it, i) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${i + 1}</td><td>${it.driver}</td><td class="n">${it.last4}</td><td><input value="${it.name}"></td><td><button style="border:0;background:none;color:var(--ink);font-size:18px">✕</button></td>`;
+    tr.querySelector("input").onchange = e => { it.name = e.target.value; save(); };
+    tr.querySelector("button").onclick = () => { items.splice(i, 1); save(); render(); };
+    $("rows").appendChild(tr);
+  });
+}
+
+// عدّل هنا: code = الاختصار اللي يطلع، re = الاسم كما يظهر في الفاتورة
+const CHAINS = [
+  { code: "OTH",  re: /oth?aim|العثيم/i },
+  { code: "DAN",  re: /danube|الدانوب/i },
+  { code: "LULU", re: /lulu|لولو/i },
+];
+
+// يقرأ النص: آخر 4 أرقام من رقم الفاتورة + أول كلمة من اسم العميل (السطر بعد التاريخ)
+function parse(text) {
+  const lines = text.split("\n").map(s => s.trim()).filter(Boolean);
+  let last4 = null, name = "";
+  for (const l of lines) {
+    const m = l.replace(/[\s-]/g, "").match(/(\d{10})/);
+    if (m && !/^\d{4}-\d{2}-\d{2}$/.test(l)) { last4 = m[1].slice(-4); break; }
+  }
+  // 1) السلاسل المعروفة: كود + (رقم الفرع أو اسم الحي)
+  for (const ch of CHAINS) {
+    for (let i = 0; i < lines.length && !name; i++) {
+      const m = lines[i].match(ch.re);
+      if (!m) continue;
+      let rest = lines[i].slice(m.index + m[0].length);
+      if (!/[A-Za-z0-9\u0600-\u06FF]/.test(rest)) rest = lines[i + 1] || "";
+      rest = rest.replace(/\b(hypermarket|market|stores?|co|company|branch|br|no|فرع|الفرع|هايبر|ماركت)\b/gi, " ").trim();
+      const num = rest.match(/\d{1,5}/);
+      let suffix = "";
+      if (num) suffix = num[0];
+      else {
+        const w = rest.replace(/[^A-Za-z\u0600-\u06FF\s]/g, " ").trim().split(/\s+/).filter(Boolean);
+        suffix = (/^(al|el|ال)$/i.test(w[0]) ? w.slice(0, 2).join("") : w[0] || "").toUpperCase();
+      }
+      name = suffix ? ch.code + "-" + suffix : ch.code;
+    }
+    if (name) break;
+  }
+  // 2) غير كذا: أول كلمة من السطر بعد التاريخ (مثل Ninja)
+  if (!name) {
+    const di = lines.findIndex(l => /\d{4}-\d{2}-\d{2}/.test(l));
+    const ci = di >= 0 ? lines.findIndex((l, i) => i > di && /[A-Za-z\u0600-\u06FF]{3,}/.test(l)) : -1;
+    if (ci >= 0) {
+      const words = lines[ci].replace(/[^A-Za-z\u0600-\u06FF\s]/g, " ").trim().split(/\s+/);
+      const code = (words[0] || "").toUpperCase();
+      const STOP = /\b(hypermarket|market|stores?|co|company|retail|trading|est|branch|br|no|فرع|الفرع|هايبر|ماركت|شركة|مؤسسة)\b/gi;
+      let rest = words.slice(1).join(" ").replace(STOP, " ").trim();
+      if (!rest) rest = (lines[ci + 1] || "").replace(STOP, " ").trim();
+      const num = rest.match(/\d{1,5}/);
+      let suffix = num ? num[0] : "";
+      if (!suffix) {
+        const w = rest.replace(/[^A-Za-z\u0600-\u06FF\s]/g, " ").trim().split(/\s+/).filter(Boolean);
+        suffix = (/^(al|el|ال)$/i.test(w[0]) ? w.slice(0, 2).join("") : w[0] || "").toUpperCase();
+      }
+      name = suffix ? code + "-" + suffix : code;
+    }
+  }
+  return { last4, name };
+}
+
+async function loop() {
+  const v = $("v"), c = document.createElement("canvas");
+  while (stream) {
+    if (v.videoWidth && !busy) {
+      busy = true;
+      const w = 1000, h = w * v.videoHeight / v.videoWidth;
+      c.width = w; c.height = h;
+      const ctx = c.getContext("2d");
+      ctx.filter = "grayscale(1) contrast(1.4)";
+      ctx.drawImage(v, 0, 0, w, h);
+      try {
+        const { data } = await worker.recognize(c);
+        const r = parse(data.text);
+        if (r.last4) {
+          const key = r.last4;
+          if (key === last) {
+            if (!items.some(x => x.last4 === key)) {
+              items.push({ driver, last4: key, name: r.name });
+              save(); render();
+              $("fr").classList.add("hit");
+              $("status").textContent = `تم: ${key} — ${r.name || "بدون اسم"}`;
+              $("status").style.color = "var(--ok)";
+              if (navigator.vibrate) navigator.vibrate(120);
+              setTimeout(() => $("fr").classList.remove("hit"), 900);
+            }
+          }
+          last = key;
+        } else { last = ""; $("status").textContent = "وجّه الكاميرا على الفاتورة"; $("status").style.color = ""; }
+      } catch (e) {}
+      busy = false;
+    }
+    await new Promise(r => setTimeout(r, 400));
+  }
+}
+
+$("go").onclick = async () => {
+  driver = $("driver").value.trim();
+  if (!driver) { $("driver").focus(); return; }
+  save();
+  $("start").style.display = "none"; $("scan").style.display = "block";
+  $("who").textContent = "السواق: " + driver;
+  render();
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment", width: { ideal: 1920 } }, audio: false });
+    $("v").srcObject = stream; await $("v").play();
+    $("status").textContent = "جاري تحميل القارئ…";
+    if (!worker) worker = await Tesseract.createWorker("eng");
+    $("status").textContent = "وجّه الكاميرا على الفاتورة";
+    loop();
+  } catch (e) { $("status").textContent = "تعذر تشغيل الكاميرا — اسمح بالوصول وافتح الصفحة عبر https"; }
+};
+
+$("change").onclick = () => { if (stream) stream.getTracks().forEach(t => t.stop()); stream = null; $("scan").style.display = "none"; $("start").style.display = "block"; };
+const tsv = () => items.map((it, i) => [i + 1, it.driver, it.last4, it.name].join("\t")).join("\n");
+$("copy").onclick = async () => { try { await navigator.clipboard.writeText(tsv()); $("copy").textContent = "تم النسخ ✓"; setTimeout(() => $("copy").textContent = "نسخ الجدول", 1500); } catch (e) {} };
+$("csv").onclick = () => {
+  const csv = "\ufeffSn,Driver,Invoice,Customer\n" + items.map((it, i) => [i + 1, it.driver, it.last4, it.name].join(",")).join("\n");
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" })); a.download = "invoices.csv"; a.click();
+};
+</script>
+</body>
+</html>
