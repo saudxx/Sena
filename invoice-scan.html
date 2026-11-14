@@ -45,13 +45,14 @@ td.n{direction:ltr;font-weight:700;letter-spacing:1px}
     <tbody id="rows"></tbody>
   </table>
   <div class="row" style="margin-top:12px">
-    <button class="btn" id="copy">نسخ الجدول</button>
-    <button class="btn ghost" id="csv">تحميل CSV</button>
+    <button class="btn" id="copy">نسخ التقرير</button>
+    <button class="btn ghost" id="csv">تحميل Excel</button>
   </div>
   <button class="btn ghost" id="change" style="margin-bottom:20px">تغيير السواق</button>
 </section>
 
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 let driver = "", items = [], worker, last = "", busy = false, stream;
@@ -63,67 +64,25 @@ function render() {
   $("rows").innerHTML = "";
   items.forEach((it, i) => {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${i + 1}</td><td>${it.driver}</td><td class="n">${it.last4}</td><td><input value="${it.name}"></td><td><button style="border:0;background:none;color:var(--ink);font-size:18px">✕</button></td>`;
+    tr.innerHTML = `<td>${i + 1}</td><td>${it.driver}</td><td class="n">${l4(it)}</td><td><input value="${it.name}"></td><td><button style="border:0;background:none;color:var(--ink);font-size:18px">✕</button></td>`;
     tr.querySelector("input").onchange = e => { it.name = e.target.value; save(); };
     tr.querySelector("button").onclick = () => { items.splice(i, 1); save(); render(); };
     $("rows").appendChild(tr);
   });
 }
 
-// عدّل هنا: code = الاختصار اللي يطلع، re = الاسم كما يظهر في الفاتورة
-const CHAINS = [
-  { code: "OTH",  re: /oth?aim|العثيم/i },
-  { code: "DAN",  re: /danube|الدانوب/i },
-  { code: "LULU", re: /lulu|لولو/i },
-];
-
-// يقرأ النص: آخر 4 أرقام من رقم الفاتورة + أول كلمة من اسم العميل (السطر بعد التاريخ)
+// يقرأ النص: رقم الفاتورة كامل بدون A + اسم العميل كامل (السطر بعد التاريخ)
 function parse(text) {
   const lines = text.split("\n").map(s => s.trim()).filter(Boolean);
-  let last4 = null, name = "";
+  let inv = null, name = "";
   for (const l of lines) {
     const m = l.replace(/[\s-]/g, "").match(/(\d{10})/);
-    if (m && !/^\d{4}-\d{2}-\d{2}$/.test(l)) { last4 = m[1].slice(-4); break; }
+    if (m) { inv = m[1]; break; }
   }
-  // 1) السلاسل المعروفة: كود + (رقم الفرع أو اسم الحي)
-  for (const ch of CHAINS) {
-    for (let i = 0; i < lines.length && !name; i++) {
-      const m = lines[i].match(ch.re);
-      if (!m) continue;
-      let rest = lines[i].slice(m.index + m[0].length);
-      if (!/[A-Za-z0-9\u0600-\u06FF]/.test(rest)) rest = lines[i + 1] || "";
-      rest = rest.replace(/\b(hypermarket|market|stores?|co|company|branch|br|no|فرع|الفرع|هايبر|ماركت)\b/gi, " ").trim();
-      const num = rest.match(/\d{1,5}/);
-      let suffix = "";
-      if (num) suffix = num[0];
-      else {
-        const w = rest.replace(/[^A-Za-z\u0600-\u06FF\s]/g, " ").trim().split(/\s+/).filter(Boolean);
-        suffix = (/^(al|el|ال)$/i.test(w[0]) ? w.slice(0, 2).join("") : w[0] || "").toUpperCase();
-      }
-      name = suffix ? ch.code + "-" + suffix : ch.code;
-    }
-    if (name) break;
-  }
-  // 2) غير كذا: أول كلمة من السطر بعد التاريخ (مثل Ninja)
-  if (!name) {
-    const di = lines.findIndex(l => /\d{4}-\d{2}-\d{2}/.test(l));
-    const ci = di >= 0 ? lines.findIndex((l, i) => i > di && /[A-Za-z\u0600-\u06FF]{3,}/.test(l)) : -1;
-    if (ci >= 0) {
-      const words = lines[ci].replace(/[^A-Za-z\u0600-\u06FF\s]/g, " ").trim().split(/\s+/);
-      const code = (words[0] || "").toUpperCase();
-      const STOP = /\b(hypermarket|market|stores?|co|company|retail|trading|est|branch|br|no|فرع|الفرع|هايبر|ماركت|شركة|مؤسسة)\b/gi;
-      let rest = words.slice(1).join(" ").replace(STOP, " ").trim();
-      if (!rest) rest = (lines[ci + 1] || "").replace(STOP, " ").trim();
-      const num = rest.match(/\d{1,5}/);
-      let suffix = num ? num[0] : "";
-      if (!suffix) {
-        const w = rest.replace(/[^A-Za-z\u0600-\u06FF\s]/g, " ").trim().split(/\s+/).filter(Boolean);
-        suffix = (/^(al|el|ال)$/i.test(w[0]) ? w.slice(0, 2).join("") : w[0] || "").toUpperCase();
-      }
-      name = suffix ? code + "-" + suffix : code;
-    }
-  }
-  return { last4, name };
+  const di = lines.findIndex(l => /\d{4}-\d{2}-\d{2}/.test(l));
+  const ci = di >= 0 ? lines.findIndex((l, i) => i > di && /[A-Za-z\u0600-\u06FF]{3,}/.test(l)) : -1;
+  if (ci >= 0) name = lines[ci].replace(/[^A-Za-z\u0600-\u06FF\s&.]/g, " ").replace(/\s+/g, " ").trim();
+  return { inv, name };
 }
 
 async function loop() {
@@ -139,11 +98,11 @@ async function loop() {
       try {
         const { data } = await worker.recognize(c);
         const r = parse(data.text);
-        if (r.last4) {
-          const key = r.last4;
+        if (r.inv) {
+          const key = r.inv;
           if (key === last) {
-            if (!items.some(x => x.last4 === key)) {
-              items.push({ driver, last4: key, name: r.name });
+            if (!items.some(x => (x.inv || x.last4) === key)) {
+              items.push({ driver, inv: key, name: r.name });
               save(); render();
               $("fr").classList.add("hit");
               $("status").textContent = `تم: ${key} — ${r.name || "بدون اسم"}`;
@@ -179,11 +138,17 @@ $("go").onclick = async () => {
 };
 
 $("change").onclick = () => { if (stream) stream.getTracks().forEach(t => t.stop()); stream = null; $("scan").style.display = "none"; $("start").style.display = "block"; };
-const tsv = () => items.map((it, i) => [i + 1, it.driver, it.last4, it.name].join("\t")).join("\n");
-$("copy").onclick = async () => { try { await navigator.clipboard.writeText(tsv()); $("copy").textContent = "تم النسخ ✓"; setTimeout(() => $("copy").textContent = "نسخ الجدول", 1500); } catch (e) {} };
+const l4 = it => String(it.inv || it.last4).slice(-4);
+const tsv = () => items.map((it, i) => [i + 1, it.driver, l4(it), it.name].join("\t")).join("\n");
+$("copy").onclick = async () => { try { await navigator.clipboard.writeText(tsv()); $("copy").textContent = "تم النسخ ✓"; setTimeout(() => $("copy").textContent = "نسخ التقرير", 1500); } catch (e) {} };
 $("csv").onclick = () => {
-  const csv = "\ufeffSn,Driver,Invoice,Customer\n" + items.map((it, i) => [i + 1, it.driver, it.last4, it.name].join(",")).join("\n");
-  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" })); a.download = "invoices.csv"; a.click();
+  if (!items.length) return;
+  const rows = [["Sn", "Driver Name", "Invoice No", "Customer Name"]].concat(items.map((it, i) => [i + 1, it.driver, l4(it), it.name]));
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws["!cols"] = [{ wch: 5 }, { wch: 16 }, { wch: 12 }, { wch: 32 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Invoices");
+  XLSX.writeFile(wb, "invoices-" + new Date().toISOString().slice(0, 10) + ".xlsx");
 };
 </script>
 </body>
