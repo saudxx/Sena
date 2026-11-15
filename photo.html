@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>تصوير الفواتير</title>
+<link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{--paper:#eef0f4;--ink:#2a3a9c;--text:#1d2236;--line:#c9cedb;--ok:#1d7a4a;--bad:#c23b3b;--card:#fff}
+@media (prefers-color-scheme:dark){:root{--paper:#14172a;--ink:#8fa0ff;--text:#e8eaf5;--line:#2c3250;--card:#1c2038;--ok:#4cc58a;--bad:#ff7b7b}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--text);font-family:Tajawal,system-ui,sans-serif;padding:env(safe-area-inset-top) 14px env(safe-area-inset-bottom)}
+h1{font-size:20px;margin:16px 0 12px;color:var(--ink)}
+input,button{font:inherit}
+.in{width:100%;padding:14px;border:2px solid var(--ink);border-radius:8px;background:var(--card);color:var(--text);font-size:18px}
+.btn{width:100%;margin-top:12px;padding:14px;border:0;border-radius:8px;background:var(--ink);color:var(--paper);font-weight:700;font-size:18px}
+.btn.ghost{background:none;border:2px solid var(--ink);color:var(--ink)}
+.btn[disabled]{opacity:.4}
+section{display:none}
+.cam{position:relative;border-radius:10px;overflow:hidden;background:#000;aspect-ratio:4/3}
+video{width:100%;height:100%;object-fit:cover}
+.flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none;transition:opacity .25s}
+.flash.on{opacity:.8;transition:none}
+#shoot{height:64px;font-size:22px}
+.strip{display:flex;gap:8px;overflow-x:auto;padding:10px 0}
+.strip .t{position:relative;flex:0 0 auto}
+.strip img{height:70px;border-radius:6px;border:2px solid var(--line);display:block}
+.strip .x{position:absolute;top:-6px;left:-6px;width:22px;height:22px;border-radius:50%;border:0;background:var(--bad);color:#fff;font-size:13px;line-height:22px;padding:0}
+.cnt{font-weight:700;margin:8px 0 0}
+.prog{height:10px;background:var(--line);border-radius:5px;overflow:hidden;margin:16px 0}
+.prog div{height:100%;width:0;background:var(--ink);transition:width .3s}
+table{width:100%;border-collapse:collapse;background:var(--card);border-radius:8px;overflow:hidden}
+th,td{padding:8px;border-bottom:1px solid var(--line);text-align:right;font-size:15px;vertical-align:middle}
+th{color:var(--ink)}
+td img{height:56px;width:76px;object-fit:cover;border-radius:6px;display:block}
+td input{width:90px;padding:8px;border:2px solid var(--line);border-radius:6px;background:var(--paper);color:var(--text);font-size:18px;font-weight:700;direction:ltr;text-align:center;letter-spacing:2px}
+td input.empty{border-color:var(--bad)}
+.note{margin:10px 0;font-weight:700}
+.lb{position:fixed;inset:0;background:rgba(0,0,0,.92);display:none;align-items:center;justify-content:center;z-index:9}
+.lb img{max-width:100%;max-height:100%}
+.row{display:flex;gap:8px}.row .btn{margin-bottom:8px}
+</style>
+</head>
+<body>
+
+<section id="start">
+  <h1>اسم السواق</h1>
+  <input id="driver" class="in" placeholder="اكتب اسم السواق" autocomplete="off">
+  <button class="btn" id="go">ابدأ التصوير</button>
+</section>
+
+<section id="cam">
+  <h1 id="who"></h1>
+  <div class="cam"><video id="v" playsinline muted></video><div class="flash" id="fl"></div></div>
+  <button class="btn" id="shoot">📷 صوّر</button>
+  <div class="cnt" id="cnt">ما صوّرت شي للحين</div>
+  <div class="strip" id="strip"></div>
+  <button class="btn" id="done" disabled>خلصت — اقرأ الأرقام</button>
+  <button class="btn ghost" id="seeRes" style="display:none">عرض النتائج المحفوظة</button>
+  <button class="btn ghost" id="change" style="margin-bottom:20px">تغيير السواق</button>
+</section>
+
+<section id="proc">
+  <h1 id="pmsg">جاري تجهيز القارئ…</h1>
+  <div class="prog"><div id="bar"></div></div>
+</section>
+
+<section id="res">
+  <h1 id="rhead">النتائج</h1>
+  <div class="note" id="rnote"></div>
+  <table>
+    <thead><tr><th>#</th><th>الصورة</th><th>السواق</th><th>آخر 4</th><th></th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <div class="row" style="margin-top:12px">
+    <button class="btn" id="copy">نسخ الجدول</button>
+    <button class="btn ghost" id="csv">تحميل CSV</button>
+  </div>
+  <button class="btn" id="more">📷 تصوير فواتير جديدة</button>
+  <button class="btn ghost" id="clear" style="margin-bottom:20px">مسح كل النتائج</button>
+</section>
+
+<div class="lb" id="lb"><img id="lbi"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+let driver = "", items = [], shots = [], worker = null, workerP = null, stream = null;
+try { items = JSON.parse(localStorage.getItem("ph_items") || "[]"); driver = localStorage.getItem("ph_driver") || ""; } catch (e) {}
+$("driver").value = driver;
+const save = () => { try { localStorage.setItem("ph_items", JSON.stringify(items.map(({ driver, last4, inv }) => ({ driver, last4, inv })))); localStorage.setItem("ph_driver", driver); } catch (e) {} };
+
+function show(id) { ["start", "cam", "proc", "res"].forEach(s => $(s).style.display = s === id ? "block" : "none"); window.scrollTo(0, 0); }
+show("start");
+
+// ---------- الكاميرا والتصوير المتتابع ----------
+async function startCam() {
+  if (stream) return;
+  stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment", width: { ideal: 1920 } }, audio: false });
+  $("v").srcObject = stream; await $("v").play();
+}
+function ensureWorker() {
+  if (!workerP) workerP = Tesseract.createWorker("eng").then(w => (worker = w));
+  return workerP;
+}
+function renderShots() {
+  $("cnt").textContent = shots.length ? `صوّرت ${shots.length} فاتورة` : "ما صوّرت شي للحين";
+  $("done").disabled = !shots.length;
+  $("seeRes").style.display = items.length ? "block" : "none";
+  $("strip").innerHTML = "";
+  shots.forEach((url, i) => {
+    const d = document.createElement("div"); d.className = "t";
+    d.innerHTML = `<img src="${url}"><button class="x">✕</button>`;
+    d.querySelector("img").onclick = () => openLb(url);
+    d.querySelector(".x").onclick = () => { shots.splice(i, 1); renderShots(); };
+    $("strip").appendChild(d);
+  });
+  $("strip").scrollLeft = -1e6; // آخر صورة
+}
+$("shoot").onclick = () => {
+  const v = $("v"); if (!v.videoWidth) return;
+  const w = Math.min(1600, v.videoWidth), h = Math.round(w * v.videoHeight / v.videoWidth);
+  const c = document.createElement("canvas"); c.width = w; c.height = h;
+  c.getContext("2d").drawImage(v, 0, 0, w, h);
+  shots.push(c.toDataURL("image/jpeg", 0.85));
+  $("fl").classList.add("on"); setTimeout(() => $("fl").classList.remove("on"), 60);
+  if (navigator.vibrate) navigator.vibrate(40);
+  renderShots();
+};
+function openLb(url) { $("lbi").src = url; $("lb").style.display = "flex"; }
+$("lb").onclick = () => $("lb").style.display = "none";
+
+$("go").onclick = async () => {
+  driver = $("driver").value.trim();
+  if (!driver) { $("driver").focus(); return; }
+  save();
+  $("who").textContent = "السواق: " + driver;
+  show("cam"); renderShots();
+  try { await startCam(); ensureWorker(); }
+  catch (e) { $("cnt").textContent = "تعذر تشغيل الكاميرا — اسمح بالوصول وافتح الصفحة عبر https"; }
+};
+$("change").onclick = () => { if (stream) stream.getTracks().forEach(t => t.stop()); stream = null; shots = []; show("start"); };
+
+// ---------- القراءة بعد ما تخلص ----------
+function parse(text) {
+  for (const l of text.split("\n")) {
+    const m = l.replace(/[\s-]/g, "").match(/(\d{10})/);
+    if (m) return m[1];
+  }
+  return null;
+}
+function loadImg(url) { return new Promise(r => { const i = new Image(); i.onload = () => r(i); i.src = url; }); }
+async function readInv(url) {
+  const img = await loadImg(url);
+  const c = document.createElement("canvas"); c.width = img.width; c.height = img.height;
+  const ctx = c.getContext("2d"); ctx.filter = "grayscale(1) contrast(1.4)"; ctx.drawImage(img, 0, 0);
+  let inv = null;
+  try { inv = parse((await worker.recognize(c)).data.text); } catch (e) {}
+  if (!inv) { try { inv = parse((await worker.recognize(url)).data.text); } catch (e) {} }
+  return inv;
+}
+
+$("done").onclick = async () => {
+  show("proc");
+  $("pmsg").textContent = "جاري تجهيز القارئ…"; $("bar").style.width = "0";
+  try { await ensureWorker(); } catch (e) { $("pmsg").textContent = "تعذر تحميل القارئ — تأكد من الإنترنت"; return; }
+  let dup = 0, miss = 0;
+  const batch = shots.slice();
+  for (let i = 0; i < batch.length; i++) {
+    $("pmsg").textContent = `جاري قراءة الصورة ${i + 1} من ${batch.length}`;
+    const inv = await readInv(batch[i]);
+    $("bar").style.width = ((i + 1) / batch.length * 100) + "%";
+    if (inv && items.some(x => x.inv === inv)) { dup++; continue; }
+    if (!inv) miss++;
+    items.push({ driver, inv: inv || "", last4: inv ? inv.slice(-4) : "", img: batch[i] });
+  }
+  shots = []; save(); renderShots();
+  let note = `تمت قراءة ${batch.length - dup} فاتورة`;
+  if (dup) note += ` — تجاهلت ${dup} مكررة`;
+  if (miss) note += ` — ${miss} ما انقرت (عبّها يدويًا)`;
+  $("rnote").textContent = note;
+  renderRes(); show("res");
+};
+
+// ---------- النتائج ----------
+function renderRes() {
+  $("rows").innerHTML = "";
+  items.forEach((it, i) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${i + 1}</td><td>${it.img ? `<img src="${it.img}">` : "—"}</td><td>${it.driver}</td><td><input inputmode="numeric" maxlength="4" value="${it.last4}"></td><td><button style="border:0;background:none;color:var(--bad);font-size:18px">✕</button></td>`;
+    const inp = tr.querySelector("input");
+    inp.classList.toggle("empty", !it.last4);
+    inp.oninput = () => { it.last4 = inp.value.replace(/\D/g, "").slice(0, 4); inp.value = it.last4; inp.classList.toggle("empty", it.last4.length !== 4); save(); };
+    if (it.img) tr.querySelector("img").onclick = () => openLb(it.img);
+    tr.querySelector("button").onclick = () => { items.splice(i, 1); save(); renderRes(); };
+    $("rows").appendChild(tr);
+  });
+}
+$("seeRes").onclick = () => { $("rnote").textContent = ""; renderRes(); show("res"); };
+$("more").onclick = () => { show("cam"); renderShots(); };
+$("clear").onclick = () => { if (confirm("تمسح كل النتائج؟")) { items = []; save(); renderRes(); renderShots(); } };
+
+const ready = () => items.filter(it => it.last4 && it.last4.length === 4);
+const tsv = () => ready().map((it, i) => [i + 1, it.driver, it.last4].join("\t")).join("\n");
+$("copy").onclick = async () => { try { await navigator.clipboard.writeText(tsv()); $("copy").textContent = "تم النسخ ✓"; setTimeout(() => $("copy").textContent = "نسخ الجدول", 1500); } catch (e) {} };
+$("csv").onclick = () => {
+  const csv = "\ufeffSn,Driver,Invoice\n" + ready().map((it, i) => [i + 1, it.driver, it.last4].join(",")).join("\n");
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" })); a.download = "invoices.csv"; a.click();
+};
+</script>
+</body>
+</html>
